@@ -6,7 +6,7 @@ $txtPath = "C:\Users\Douglas\Desktop\mails.txt"
 $smtpServer = "smtp.gmail.com"
 $smtpPort   = 587
 $fromEmail  = "dougdari@gmail.com"
-$password   = "rthy eajh enqi qksx"
+$password   = ""
 # ================================================
 
 $securePass = ConvertTo-SecureString $password -AsPlainText -Force
