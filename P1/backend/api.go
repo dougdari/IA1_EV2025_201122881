@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -52,7 +53,6 @@ type DiagnosticoResponse struct {
 
 // VectorEntrada contiene todas las características extraídas para el modelo
 type VectorEntrada struct {
-	// Probabilidades del modelo HuggingFace (0.0 - 1.0)
 	a_asma         float32
 	a_bronquitis   float32
 	a_enfisema     float32
@@ -61,7 +61,6 @@ type VectorEntrada struct {
 	a_migranas     float32
 	a_reflujo      float32
 
-	// Features extraídas del análisis de texto
 	n_sintomas          int
 	n_cronicas          int
 	redflag_pecho       bool
@@ -82,7 +81,6 @@ type FeaturesTexto struct {
 // MAPEOS
 // ============================================================================
 
-// Mapeo de clases Softmax a enfermedades y niveles de urgencia
 var clasificacionMedica = map[int]struct {
 	Urgencia   string
 	Enfermedad string
@@ -98,26 +96,22 @@ var clasificacionMedica = map[int]struct {
 	7: {"baja", "reflujo", "cronica_si"},
 }
 
-// Keywords para detectar síntomas en el texto
 var sintomasKeywords = []string{
 	"pecho", "tos", "flema", "silbido", "falta de aire",
 	"ahogo", "dificultad para respirar", "opresion", "dolor al respirar",
 	"cansancio", "fatiga", "sibilancias", "esputo", "mucosidad",
 }
 
-// Keywords para detectar enfermedades crónicas en el texto
 var cronicasKeywords = []string{
 	"asma", "epoc", "bronquitis cronica", "fibrosis pulmonar",
 	"enfisema", "apnea", "cronico", "cronica", "años de", "desde hace",
 }
 
-// Keywords que indican problemas en el pecho (red flag)
 var pechoKeywords = []string{
 	"dolor de pecho", "opresion en el pecho", "presion en el pecho",
 	"pecho apretado", "dolor toracico", "dolor intenso en el pecho",
 }
 
-// Keywords que indican problemas respiratorios graves (red flag)
 var respiracionKeywords = []string{
 	"no puedo respirar", "falta de aire severa", "ahogo",
 	"dificultad extrema", "labios azules", "cianosis", "me ahogo",
@@ -136,7 +130,6 @@ const softmaxModelPath = algorithms.DefaultSoftmaxModelPath
 // FUNCIONES DE UTILIDAD
 // ============================================================================
 
-// cargarProlog carga el archivo de conocimiento Prolog
 func cargarProlog(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -152,7 +145,6 @@ func boolToFloat(b bool) float64 {
 	return 0.0
 }
 
-// slice2DToDense convierte un slice 2D de Go a una matriz Gonum Dense
 func slice2DToDense(x [][]float64) (*mat.Dense, error) {
 	if len(x) == 0 {
 		return nil, fmt.Errorf("la matriz X no puede estar vacía")
@@ -170,7 +162,6 @@ func slice2DToDense(x [][]float64) (*mat.Dense, error) {
 	return mat.NewDense(nSamples, nFeatures, data), nil
 }
 
-// denseTo2D convierte una matriz Gonum Dense a un slice 2D de Go
 func denseTo2D(m *mat.Dense) [][]float64 {
 	r, c := m.Dims()
 	out := make([][]float64, r)
@@ -187,20 +178,17 @@ func denseTo2D(m *mat.Dense) [][]float64 {
 // ANÁLISIS DE TEXTO
 // ============================================================================
 
-// analizarTexto extrae características del texto del paciente
 func analizarTexto(texto string) FeaturesTexto {
 	textoLower := strings.ToLower(texto)
 
 	var features FeaturesTexto
 
-	// Contar síntomas mencionados
 	for _, sintoma := range sintomasKeywords {
 		if strings.Contains(textoLower, sintoma) {
 			features.n_sintomas++
 		}
 	}
 
-	// Contar enfermedades crónicas mencionadas
 	for _, cronica := range cronicasKeywords {
 		if strings.Contains(textoLower, cronica) {
 			features.n_cronicas++
@@ -208,7 +196,6 @@ func analizarTexto(texto string) FeaturesTexto {
 		}
 	}
 
-	// Detectar red flags de pecho
 	for _, keyword := range pechoKeywords {
 		if strings.Contains(textoLower, keyword) {
 			features.redflag_pecho = true
@@ -216,7 +203,6 @@ func analizarTexto(texto string) FeaturesTexto {
 		}
 	}
 
-	// Detectar red flags de respiración
 	for _, keyword := range respiracionKeywords {
 		if strings.Contains(textoLower, keyword) {
 			features.redflag_respiracion = true
@@ -231,9 +217,8 @@ func analizarTexto(texto string) FeaturesTexto {
 // INTEGRACIÓN CON HUGGINGFACE
 // ============================================================================
 
-// llamarHuggingFace envía el texto al modelo de HuggingFace para análisis NLP
 func llamarHuggingFace(texto string) (map[string]float64, error) {
-	fmt.Println("→ Llamando a HuggingFace API...")
+	fmt.Println("Llamando a HuggingFace API...")
 
 	token := os.Getenv("HF_TOKEN")
 	if token == "" {
@@ -242,7 +227,6 @@ func llamarHuggingFace(texto string) (map[string]float64, error) {
 
 	url := "https://router.huggingface.co/hf-inference/models/PlanTL-GOB-ES/bsc-bio-ehr-es"
 
-	// Agregar <mask> al texto para el modelo de fill-mask
 	textoConMask := texto + " padezco de <mask>."
 
 	payload, err := json.Marshal(map[string]string{
@@ -275,16 +259,13 @@ func llamarHuggingFace(texto string) (map[string]float64, error) {
 		return nil, fmt.Errorf("error de HuggingFace: %s - %s", resp.Status, string(body))
 	}
 
-	// Parsear la respuesta
 	var resultado interface{}
 	if err := json.Unmarshal(body, &resultado); err != nil {
 		return nil, fmt.Errorf("error al parsear JSON: %v", err)
 	}
 
-	// Convertir a mapa de probabilidades
 	probabilidades := make(map[string]float64)
 
-	// La respuesta viene como: [{"token_str": "asma", "score": 0.85}, ...]
 	if resultArray, ok := resultado.([]interface{}); ok && len(resultArray) > 0 {
 		for _, item := range resultArray {
 			if itemMap, ok := item.(map[string]interface{}); ok {
@@ -297,7 +278,7 @@ func llamarHuggingFace(texto string) (map[string]float64, error) {
 		}
 	}
 
-	fmt.Printf("✓ HuggingFace: %d enfermedades detectadas\n", len(probabilidades))
+	fmt.Printf("HuggingFace: %d enfermedades detectadas\n", len(probabilidades))
 	return probabilidades, nil
 }
 
@@ -305,15 +286,11 @@ func llamarHuggingFace(texto string) (map[string]float64, error) {
 // EVALUACIÓN DE MEDICAMENTOS CON PROLOG
 // ============================================================================
 
-// obtenerMedicamentosContraindicados consulta Prolog DIRECTAMENTE
-// para obtener los medicamentos contraindicados según el diagnóstico
-
 func obtenerMedicamentosContraindicados(
 	m golog.Machine,
 	urgencia, enfermedad, cronica, pecho, respiracion string,
 ) []MedicamentoRecomendado {
 
-	// Usamos la regla de medicamentos contraindicados
 	query := "medicamento_contraindicado(Urg, Enf, Cron, Pecho, Resp, Med)."
 	solutions := m.ProveAll(query)
 
@@ -329,56 +306,31 @@ func obtenerMedicamentosContraindicados(
 
 		matchCount := 0
 
-		// 1: urgencia
-
-		fmt.Println("Evaluando medicamento:", med)
-		fmt.Println(urg, enf, cron, pech, resp)
-		fmt.Println(urgencia, enfermedad, cronica, pecho, respiracion)
-		fmt.Println(urg, urgencia)
-
 		if urg == urgencia {
 			matchCount++
 		}
-		// 2: enfermedad
-
-		fmt.Println(enf, enfermedad)
 		if enf == enfermedad {
 			matchCount++
 		}
-		// 3: cronicidad
-
-		fmt.Println(cron, cronica)
 		if cron == cronica {
 			matchCount++
 		}
-		// 4: pecho
-
-		fmt.Println(pech, pecho)
 		if pech == pecho {
 			matchCount++
 		}
-		// 5: respiración
-
-		fmt.Println(resp, respiracion)
 		if resp == respiracion {
 			matchCount++
 		}
 
-		// 6: “peso extra” por combinación peligrosa (ejemplos)
-		// alta urgencia + problema respiratorio
-
-		fmt.Println(urgencia, respiracion)
 		if urgencia == "alta" && respiracion == "resp_si" {
 			matchCount++
 		}
-		// enfermedad pulmonar crónica + respiración comprometida
 
 		if (enfermedad == "asma" || enfermedad == "bronquitis" || enfermedad == "enfisema") &&
 			cronica == "cronica_si" && respiracion == "resp_si" {
 			matchCount++
 		}
 
-		// Tenemos 5 condiciones base + 2 extras posibles = divisor 7.0
 		matchPercent := float64(matchCount) / 7.0 * 100.0
 
 		results = append(results, MedicamentoRecomendado{
@@ -399,28 +351,24 @@ func obtenerMedicamentosContraindicados(
 // PIPELINE COMPLETO DE DIAGNÓSTICO
 // ============================================================================
 
-// procesarDiagnostico ejecuta todo el pipeline
 func procesarDiagnostico(req DiagnosticoRequest) (*DiagnosticoResponse, error) {
 	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("INICIANDO DIAGNÓSTICO MÉDICO")
+	fmt.Println("INICIANDO DIAGNOSTICO MEDICO")
 	fmt.Println(strings.Repeat("=", 60))
 
-	// ========== PASO 1: ANÁLISIS DE TEXTO ==========
-	fmt.Println("\n[PASO 1] Análisis de texto del paciente")
+	fmt.Println("\n[PASO 1] Analisis de texto del paciente")
 	featuresTexto := analizarTexto(req.Texto)
-	fmt.Printf("  • Síntomas detectados: %d\n", featuresTexto.n_sintomas)
-	fmt.Printf("  • Enfermedades crónicas: %d\n", featuresTexto.n_cronicas)
-	fmt.Printf("  • Red flag pecho: %v\n", featuresTexto.redflag_pecho)
-	fmt.Printf("  • Red flag respiración: %v\n", featuresTexto.redflag_respiracion)
+	fmt.Printf("  Sintomas detectados: %d\n", featuresTexto.n_sintomas)
+	fmt.Printf("  Enfermedades cronicas: %d\n", featuresTexto.n_cronicas)
+	fmt.Printf("  Red flag pecho: %v\n", featuresTexto.redflag_pecho)
+	fmt.Printf("  Red flag respiracion: %v\n", featuresTexto.redflag_respiracion)
 
-	// ========== PASO 2: HUGGINGFACE NLP ==========
-	fmt.Println("\n[PASO 2] Análisis con HuggingFace (NLP)")
+	fmt.Println("\n[PASO 2] Analisis con HuggingFace (NLP)")
 	probabilidadesHF, err := llamarHuggingFace(req.Texto)
 	if err != nil {
 		return nil, fmt.Errorf("error en HuggingFace: %v", err)
 	}
 
-	// Construir vector de entrada con probabilidades de HF
 	var entrada VectorEntrada
 	entrada.a_asma = float32(probabilidadesHF["asma"])
 	entrada.a_bronquitis = float32(probabilidadesHF["bronquitis"])
@@ -435,22 +383,18 @@ func procesarDiagnostico(req DiagnosticoRequest) (*DiagnosticoResponse, error) {
 	entrada.redflag_respiracion = featuresTexto.redflag_respiracion
 	entrada.tiene_cronicas = featuresTexto.tiene_cronicas
 
-	// ========== PASO 3: CLASIFICACIÓN CON SOFTMAX ==========
-	fmt.Println("\n[PASO 3] Clasificación con modelo Softmax")
+	fmt.Println("\n[PASO 3] Clasificacion con modelo Softmax")
 
-	// Verificar que el modelo esté cargado
 	if softmaxModel == nil {
 		if model, err := algorithms.LoadSoftmaxRegression(softmaxModelPath); err == nil {
 			softmaxModel = model
-			fmt.Println("  ⚠ Modelo cargado desde disco")
+			fmt.Println("Modelo cargado desde disco")
 		} else {
-			return nil, fmt.Errorf("modelo Softmax no disponible. Entrénelo primero")
+			return nil, fmt.Errorf("modelo Softmax no disponible. Entrenelo primero")
 		}
 	}
 
-	// Crear matriz de entrada para Softmax (1 muestra x 9 features)
 	Xdata := []float64{
-
 		float64(entrada.a_asma),
 		float64(entrada.a_bronquitis),
 		float64(entrada.a_enfisema),
@@ -466,32 +410,28 @@ func procesarDiagnostico(req DiagnosticoRequest) (*DiagnosticoResponse, error) {
 	}
 	Xmat := mat.NewDense(1, len(Xdata), Xdata)
 
-	// Predecir clase
 	prediccion := softmaxModel.Predict(Xmat)
 	claseSoftmax := prediccion[0]
 
-	// Obtener probabilidades
 	probsMat := softmaxModel.PredictProba(Xmat)
 	probsRow := probsMat.RawRowView(0)
-	fmt.Printf("  • Clase predicha: %d\n", claseSoftmax)
-	fmt.Printf("  • Probabilidades: ")
+	fmt.Printf("  Clase predicha: %d\n", claseSoftmax)
+	fmt.Printf("  Probabilidades: ")
 	for i, p := range probsRow {
 		fmt.Printf("[%d]=%.3f ", i, p)
 	}
 	fmt.Println()
 
-	// ========== PASO 4: MAPEO A DIAGNÓSTICO ==========
-	fmt.Println("\n[PASO 4] Mapeo a diagnóstico médico")
+	fmt.Println("\n[PASO 4] Mapeo a diagnostico medico")
 	diagnostico, existe := clasificacionMedica[claseSoftmax]
 	if !existe {
-		diagnostico = clasificacionMedica[0] // Default: ninguna enfermedad
+		diagnostico = clasificacionMedica[0]
 	}
 
-	fmt.Printf("  • Enfermedad: %s\n", diagnostico.Enfermedad)
-	fmt.Printf("  • Urgencia: %s\n", diagnostico.Urgencia)
-	fmt.Printf("  • Crónica: %s\n", diagnostico.Cronica)
+	fmt.Printf("  Enfermedad: %s\n", diagnostico.Enfermedad)
+	fmt.Printf("  Urgencia: %s\n", diagnostico.Urgencia)
+	fmt.Printf("  Cronica: %s\n", diagnostico.Cronica)
 
-	// Determinar flags de pecho y respiración
 	pecho := "pecho_no"
 	if entrada.redflag_pecho {
 		pecho = "pecho_si"
@@ -501,8 +441,7 @@ func procesarDiagnostico(req DiagnosticoRequest) (*DiagnosticoResponse, error) {
 		respiracion = "resp_si"
 	}
 
-	// ========== PASO 5: PROLOG - OBTENER MEDICAMENTOS CONTRAINDICADOS ==========
-	fmt.Println("\n[PASO 5] Obteniendo medicamentos CONTRAINDICADOS desde Prolog")
+	fmt.Println("\n[PASO 5] Obteniendo medicamentos contraindicados desde Prolog")
 	medicamentosContraindicados := obtenerMedicamentosContraindicados(
 		maquinaProlog,
 		diagnostico.Urgencia,
@@ -512,60 +451,50 @@ func procesarDiagnostico(req DiagnosticoRequest) (*DiagnosticoResponse, error) {
 		respiracion,
 	)
 
-	// ========== PASO 6: ANÁLISIS DE RESULTADOS ==========
 	fmt.Println("\n[PASO 6] Analizando medicamentos contraindicados")
-
-	// TODOS los medicamentos que devolvió Prolog son contraindicados
 	totalContraindicados := len(medicamentosContraindicados)
+	fmt.Printf("  Total medicamentos contraindicados: %d\n", totalContraindicados)
 
-	fmt.Printf("  • Total medicamentos CONTRAINDICADOS: %d\n", totalContraindicados)
-
-	// ========== PASO 7: GENERAR ADVERTENCIAS ==========
 	var advertencias []string
 
-	// Advertencias según la enfermedad
 	if diagnostico.Enfermedad != "ninguna" {
 		advertencias = append(advertencias,
-			fmt.Sprintf("📋 Diagnóstico: %s", diagnostico.Enfermedad))
+			fmt.Sprintf("Diagnostico: %s", diagnostico.Enfermedad))
 	}
 
-	// Advertencias según urgencia
 	if diagnostico.Urgencia == "alta" {
 		advertencias = append(advertencias,
-			"🚨 URGENCIA ALTA: Se recomienda atención médica inmediata")
+			"URGENCIA ALTA: Se recomienda atencion medica inmediata")
 	}
 
-	// Advertencias por red flags
 	if featuresTexto.redflag_pecho {
 		advertencias = append(advertencias,
-			"⚠️ RED FLAG: Dolor o presión en el pecho detectado")
+			"RED FLAG: Dolor o presion en el pecho detectado")
 	}
 	if featuresTexto.redflag_respiracion {
 		advertencias = append(advertencias,
-			"⚠️ RED FLAG: Dificultad respiratoria severa detectada")
+			"RED FLAG: Dificultad respiratoria severa detectada")
 	}
 
-	// Advertencia sobre medicamentos contraindicados
 	if totalContraindicados > 0 {
 		advertencias = append(advertencias,
-			fmt.Sprintf("⚠️ IMPORTANTE: %d medicamentos están CONTRAINDICADOS para esta enfermedad",
+			fmt.Sprintf("IMPORTANTE: %d medicamentos estan contraindicados para esta enfermedad",
 				totalContraindicados))
 	}
 
-	// ========== RESPUESTA FINAL ==========
 	respuesta := &DiagnosticoResponse{
 		EnfermedadDetectada:       diagnostico.Enfermedad,
 		NivelUrgencia:             diagnostico.Urgencia,
 		ProbabilidadesHuggingFace: probabilidadesHF,
 		ClaseSoftmax:              claseSoftmax,
-		MedicamentosEvaluados:     medicamentosContraindicados, // Solo los contraindicados
+		MedicamentosEvaluados:     medicamentosContraindicados,
 		TotalContraindicados:      totalContraindicados,
 		Advertencias:              advertencias,
 		TextoRecibido:             req.Texto,
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("DIAGNÓSTICO COMPLETADO")
+	fmt.Println("DIAGNOSTICO COMPLETADO")
 	fmt.Println(strings.Repeat("=", 60) + "\n")
 
 	return respuesta, nil
@@ -586,7 +515,6 @@ func main() {
 		},
 	})
 
-	// ========== MIDDLEWARE CORS ==========
 	app.Use(func(c *fiber.Ctx) error {
 		c.Set("Access-Control-Allow-Origin", "*")
 		c.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
@@ -599,49 +527,42 @@ func main() {
 		return c.Next()
 	})
 
-	// ========== INICIALIZACIÓN ==========
-	fmt.Println("🚀 Iniciando servidor UniMatch...")
+	fmt.Println("Iniciando servidor UniMatch...")
 
-	// Cargar base de conocimiento Prolog
-	fmt.Println("📚 Cargando base de conocimiento Prolog...")
+	fmt.Println("Cargando base de conocimiento Prolog...")
 	programa := cargarProlog("./prolog/conocimiento.pl")
 	maquinaProlog = golog.NewMachine().Consult(programa)
-	fmt.Println("✓ Prolog cargado")
+	fmt.Println("Prolog cargado")
 
-	// Intentar cargar modelo Softmax desde disco
-	fmt.Println("🧠 Cargando modelo Softmax...")
+	fmt.Println("Cargando modelo Softmax...")
 	if model, err := algorithms.LoadSoftmaxRegression(softmaxModelPath); err == nil {
 		softmaxModel = model
-		fmt.Println("✓ Modelo Softmax cargado desde", softmaxModelPath)
+		fmt.Println("Modelo Softmax cargado desde", softmaxModelPath)
 	} else {
-		fmt.Println("⚠ Modelo Softmax no encontrado. Entrénelo vía /softmax/train")
+		fmt.Println("Modelo Softmax no encontrado. Entrenelo via /softmax/train")
 	}
 
-	// ========== RUTAS ==========
-
-	// Ruta principal
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"servicio":    "UniMatch Medical Diagnosis API",
 			"version":     "3.0",
 			"estado":      "activo",
-			"descripcion": "Sistema que evalúa medicamentos y detecta contraindicaciones",
+			"descripcion": "Sistema que evalua medicamentos y detecta contraindicaciones",
 			"flujo": []string{
-				"1. Análisis de texto (síntomas y red flags)",
+				"1. Analisis de texto (sintomas y red flags)",
 				"2. HuggingFace (probabilidades de enfermedades)",
-				"3. Softmax (clasificación final)",
-				"4. Prolog (entrega TODOS los medicamentos)",
-				"5. Evaluación (marca cuáles están contraindicados)",
+				"3. Softmax (clasificacion final)",
+				"4. Prolog (entrega todos los medicamentos)",
+				"5. Evaluacion (marca cuales estan contraindicados)",
 			},
 			"endpoints": []string{
-				"POST /diagnostico - Diagnóstico completo con evaluación de medicamentos",
+				"POST /diagnostico - Diagnostico completo con evaluacion de medicamentos",
 				"POST /softmax/train - Entrenar modelo Softmax",
-				"POST /softmax/predict - Predicción con Softmax",
+				"POST /softmax/predict - Prediccion con Softmax",
 			},
 		})
 	})
 
-	// ========== ENDPOINT PRINCIPAL: DIAGNÓSTICO ==========
 	app.Post("/diagnostico", func(c *fiber.Ctx) error {
 		var req DiagnosticoRequest
 		if err := c.BodyParser(&req); err != nil {
@@ -657,19 +578,39 @@ func main() {
 			})
 		}
 
-		// Procesar diagnóstico completo
 		respuesta, err := procesarDiagnostico(req)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{
-				"error":   "Error al procesar diagnóstico",
+				"error":   "Error al procesar diagnostico",
 				"detalle": err.Error(),
 			})
 		}
 
+		///RPA
+
+		exePath, _ := os.Getwd()
+
+		cmd := exec.Command(
+			"powershell",
+			"-NoProfile",
+			"-ExecutionPolicy", "Bypass",
+			"-File", "rpa.ps1",
+		)
+
+		cmd.Dir = exePath
+
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Println("Error ejecutando PowerShell:", err)
+		}
+
+		fmt.Println(string(out))
+
+		///
+
 		return c.JSON(respuesta)
 	})
 
-	// ========== ENDPOINT: ENTRENAR SOFTMAX ==========
 	app.Post("/softmax/train", func(c *fiber.Ctx) error {
 		var req struct {
 			X         [][]float64 `json:"x"`
@@ -691,7 +632,6 @@ func main() {
 			return c.Status(400).JSON(fiber.Map{"error": "X e Y deben tener el mismo tamaño"})
 		}
 
-		// Valores por defecto
 		lr := req.Lr
 		if lr == 0 {
 			lr = 0.1
@@ -705,24 +645,21 @@ func main() {
 			reg = 1e-3
 		}
 
-		// Convertir a matriz Gonum
 		Xmat, err := slice2DToDense(req.X)
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
-		// Entrenar modelo
-		fmt.Println("🎓 Entrenando modelo Softmax...")
+		fmt.Println("Entrenando modelo Softmax...")
 		model := algorithms.NewSoftmaxRegression(lr, nIter, reg)
 		model.Fit(Xmat, req.Y)
 		acc := model.Accuracy(Xmat, req.Y)
 
-		// Guardar modelo globalmente y en disco
 		softmaxModel = model
 		if err := model.SaveToFile(softmaxModelPath); err != nil {
-			fmt.Println("⚠ Error al guardar modelo:", err)
+			fmt.Println("Error al guardar modelo:", err)
 		} else {
-			fmt.Println("✓ Modelo guardado en", softmaxModelPath)
+			fmt.Println("Modelo guardado en", softmaxModelPath)
 		}
 
 		return c.JSON(fiber.Map{
@@ -734,7 +671,6 @@ func main() {
 		})
 	})
 
-	// ========== ENDPOINT: PREDICCIÓN SOFTMAX ==========
 	app.Post("/softmax/predict", func(c *fiber.Ctx) error {
 		var req struct {
 			X [][]float64 `json:"x"`
@@ -748,7 +684,6 @@ func main() {
 			return c.Status(400).JSON(fiber.Map{"error": "X es requerido"})
 		}
 
-		// Verificar modelo
 		if softmaxModel == nil {
 			if model, err := algorithms.LoadSoftmaxRegression(softmaxModelPath); err == nil {
 				softmaxModel = model
@@ -759,7 +694,6 @@ func main() {
 			}
 		}
 
-		// Convertir y predecir
 		Xmat, err := slice2DToDense(req.X)
 		if err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
@@ -775,16 +709,15 @@ func main() {
 		})
 	})
 
-	// ========== INICIAR SERVIDOR ==========
-	fmt.Println("\n✅ Servidor UniMatch activo en puerto 8080")
-	fmt.Println("📡 Endpoints disponibles:")
-	fmt.Println("   • GET  /               - Info del servicio")
-	fmt.Println("   • POST /diagnostico    - Diagnóstico con contraindicaciones")
-	fmt.Println("   • POST /softmax/train  - Entrenar modelo")
-	fmt.Println("   • POST /softmax/predict - Predicción directa")
+	fmt.Println("\nServidor UniMatch activo en puerto 8080")
+	fmt.Println("Endpoints disponibles:")
+	fmt.Println("   GET  /")
+	fmt.Println("   POST /diagnostico")
+	fmt.Println("   POST /softmax/train")
+	fmt.Println("   POST /softmax/predict")
 	fmt.Println()
 
 	if err := app.Listen(":8080"); err != nil {
-		fmt.Printf("❌ Error al iniciar servidor: %v\n", err)
+		fmt.Printf("Error al iniciar servidor: %v\n", err)
 	}
 }
